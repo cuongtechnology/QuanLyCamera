@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: vms-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vms_onvif
+      POSTGRES_USER: vms_user
+      POSTGRES_PASSWORD: vms_password_change_me
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - vms-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vms_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend NodeJS API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vms-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: vms_onvif
+      DB_USER: vms_user
+      DB_PASSWORD: vms_password_change_me
+      JWT_SECRET: your_jwt_secret_change_me
+      HLS_PATH: /var/hls
+      HLS_BASE_URL: http://localhost:8080/hls
+      RECORDING_PATH: /var/recordings
+      WS_PORT: 3001
+    volumes:
+      - hls-data:/var/hls
+      - recordings-data:/var/recordings
+      - ./backend/logs:/var/log
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    networks:
+      - vms-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # NGINX for HLS streaming
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    container_name: vms-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    volumes:
+      - hls-data:/var/hls:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    ports:
+      - "8080:80"
+    networks:
+      - vms-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend (React)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vms-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      REACT_APP_API_URL: http://localhost:3000/api
+      REACT_APP_WS_URL: ws://localhost:3001
+      REACT_APP_HLS_BASE_URL: http://localhost:8080/hls
+    ports:
+      - "80:80"
+    networks:
+      - vms-network
+
+volumes:
+  postgres-data:
+    driver: local
+  hls-data:
+    driver: local
+  recordings-data:
+    driver: local
+
+networks:
+  vms-network:
+    driver: bridge
